@@ -57,30 +57,30 @@ def trainer(model: tf.keras.Model,
     train_data = train_data.shuffle(buffer_size=buffer_size).batch(batch_size)
     n_minibatch = int(np.ceil(X_train.shape[0] / batch_size))
 
+    values = []
+
     # iterate over epochs
     for epoch in range(epochs):
         if verbose:
             pbar = tf.keras.utils.Progbar(n_minibatch, 1)
+        else:
+            pbar = None
 
         # iterate over the batches of the dataset
+        values_epoch = None
         for step, train_batch in enumerate(train_data):
-
             if y_train is None:
                 X_train_batch = train_batch
+                ground_truth = X_train_batch
             else:
                 X_train_batch, y_train_batch = train_batch
+                ground_truth = y_train_batch
 
             if isinstance(preprocess_fn, Callable):  # type: ignore
                 X_train_batch = preprocess_fn(X_train_batch)
 
             with tf.GradientTape() as tape:
                 preds = model(X_train_batch)
-
-                if y_train is None:
-                    ground_truth = X_train_batch
-                else:
-                    ground_truth = y_train_batch
-
                 # compute loss
                 if isinstance(loss_fn, Callable):  # type: ignore
                     if tf.is_tensor(preds):
@@ -100,19 +100,26 @@ def trainer(model: tf.keras.Model,
 
             grads = tape.gradient(loss, model.trainable_weights)
             optimizer.apply_gradients(zip(grads, model.trainable_weights))
-
+            loss_val = loss.numpy()
+            if loss_val.shape:
+                if loss_val.shape[0] != batch_size:
+                    if len(loss_val.shape) == 1:
+                        shape = (batch_size - loss_val.shape[0], )
+                    elif len(loss_val.shape) == 2:
+                        shape = (batch_size - loss_val.shape[0], loss_val.shape[1])  # type: ignore
+                    else:
+                        raise RuntimeError('This should not happen!')
+                    add_mean = np.ones(shape) * loss_val.mean()
+                    loss_val = np.r_[loss_val, add_mean]
+            pbar_values = [('loss', loss_val)]
+            if log_metric is not None:
+                log_metric[1](ground_truth, preds)
+                pbar_values.append((log_metric[0], log_metric[1].result().numpy()))
             if verbose:
-                loss_val = loss.numpy()
-                if loss_val.shape:
-                    if loss_val.shape[0] != batch_size:
-                        if len(loss_val.shape) == 1:
-                            shape = (batch_size - loss_val.shape[0], )
-                        elif len(loss_val.shape) == 2:
-                            shape = (batch_size - loss_val.shape[0], loss_val.shape[1])  # type: ignore
-                        add_mean = np.ones(shape) * loss_val.mean()
-                        loss_val = np.r_[loss_val, add_mean]
-                pbar_values = [('loss', loss_val)]
-                if log_metric is not None:
-                    log_metric[1](ground_truth, preds)
-                    pbar_values.append((log_metric[0], log_metric[1].result().numpy()))
                 pbar.add(1, values=pbar_values)
+            if values_epoch:
+                values_epoch = [(prev[0], prev[1]+new[1]) for prev, new in zip(values_epoch, pbar_values)]
+            else:
+                values_epoch = pbar_values
+        values.append({'epoch': epoch+1, 'n_minibatch': n_minibatch})
+        values[-1].update({k: v / (n_minibatch) for k, v in values_epoch})
