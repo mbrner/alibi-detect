@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import copy
 import numpy as np
-from typing import Dict
+from typing import Dict, Union, List
 
 DEFAULT_META = {
     "name": None,
@@ -79,7 +79,7 @@ class BaseDetector(ABC):
 
 class FitMixin(ABC):
     @abstractmethod
-    def fit(self, X: np.ndarray) -> None:
+    def fit(self, X: np.ndarray) -> Union[None, List[Dict]]:
         pass
 
 

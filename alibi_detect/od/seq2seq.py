@@ -2,8 +2,12 @@ import logging
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.layers import Dense, InputLayer
-from typing import Dict, Tuple, Union
-from alibi_detect.models.autoencoder import Seq2Seq, EncoderLSTM, DecoderLSTM
+from typing import Dict, Tuple, Union, List
+from alibi_detect.models.autoencoder import (Seq2Seq,
+                                             EncoderLSTM,
+                                             DecoderLSTM,
+                                             DecoderLSTMAttention,
+                                             DecoderLSTMAttentionTF)
 from alibi_detect.models.trainer import trainer
 from alibi_detect.base import BaseDetector, FitMixin, ThresholdMixin, outlier_prediction_dict
 from alibi_detect.utils.prediction import predict_batch
@@ -21,7 +25,8 @@ class OutlierSeq2Seq(BaseDetector, FitMixin, ThresholdMixin):
                  threshold_net: tf.keras.Sequential = None,
                  latent_dim: int = None,
                  output_activation: str = None,
-                 beta: float = 1.
+                 beta: float = 1.,
+                 attention: bool = False,
                  ) -> None:
         """
         Seq2Seq-based outlier detector.
@@ -71,7 +76,12 @@ class OutlierSeq2Seq(BaseDetector, FitMixin, ThresholdMixin):
             self.seq2seq = seq2seq
         elif isinstance(latent_dim, int) and isinstance(threshold_net, tf.keras.Sequential):
             encoder_net = EncoderLSTM(latent_dim)
-            decoder_net = DecoderLSTM(latent_dim, n_features, output_activation)
+            if attention == 0:
+                decoder_net = DecoderLSTM(latent_dim, n_features, output_activation)
+            elif attention == 1:
+                decoder_net = DecoderLSTMAttention(latent_dim, n_features, output_activation)
+            elif attention == 2:
+                decoder_net = DecoderLSTMAttentionTF(latent_dim, n_features, output_activation)
             self.seq2seq = Seq2Seq(encoder_net, decoder_net, threshold_net, n_features, beta=beta)
         else:
             raise TypeError('No valid format detected for `seq2seq` (tf.keras.Model), '
@@ -90,7 +100,7 @@ class OutlierSeq2Seq(BaseDetector, FitMixin, ThresholdMixin):
             verbose: bool = True,
             log_metric: Tuple[str, "tf.keras.metrics"] = None,
             callbacks: tf.keras.callbacks = None,
-            ) -> None:
+            ) -> List[Dict]:
         """
         Train Seq2Seq model.
 
@@ -132,7 +142,7 @@ class OutlierSeq2Seq(BaseDetector, FitMixin, ThresholdMixin):
                   'callbacks': callbacks}
 
         # train
-        trainer(*args, **kwargs)
+        return trainer(*args, **kwargs)
 
     def infer_threshold(self,
                         X: np.ndarray,

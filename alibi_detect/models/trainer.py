@@ -1,6 +1,6 @@
 import numpy as np
 import tensorflow as tf
-from typing import Callable, Tuple
+from typing import Callable, Tuple, List, Dict
 
 
 def trainer(model: tf.keras.Model,
@@ -15,7 +15,7 @@ def trainer(model: tf.keras.Model,
             buffer_size: int = 1024,
             verbose: bool = True,
             log_metric:  Tuple[str, "tf.keras.metrics"] = None,
-            callbacks: tf.keras.callbacks = None) -> None:  # TODO: incorporate callbacks + LR schedulers
+            callbacks: tf.keras.callbacks = None) -> List[Dict]:  # TODO: incorporate callbacks + LR schedulers
     """
     Train TensorFlow model.
 
@@ -115,11 +115,12 @@ def trainer(model: tf.keras.Model,
             if log_metric is not None:
                 log_metric[1](ground_truth, preds)
                 pbar_values.append((log_metric[0], log_metric[1].result().numpy()))
-            if verbose:
-                pbar.add(1, values=pbar_values)
             if values_epoch:
                 values_epoch = [(prev[0], prev[1]+new[1]) for prev, new in zip(values_epoch, pbar_values)]
             else:
                 values_epoch = pbar_values
+            if verbose:
+                pbar.add(1, values=pbar_values)
         values.append({'epoch': epoch+1, 'n_minibatch': n_minibatch})
-        values[-1].update({k: v / (n_minibatch) for k, v in values_epoch})
+        values[-1].update({k: v/n for k, (v, n) in pbar._values.items()})
+    return values

@@ -1,7 +1,7 @@
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.layers import Bidirectional, Concatenate, Dense, Flatten, Layer, LSTM
-from typing import Callable, List, Tuple
+from tensorflow.keras.layers import Bidirectional, Concatenate, Dense, Flatten, Layer, LSTM, Attention
+from typing import Callable, List, Tuple, Union
 from alibi_detect.utils.distance import relative_euclidean_distance
 
 # TODO: add difference between train and inference mode for dropout
@@ -225,9 +225,89 @@ class DecoderLSTM(Layer):
         self.decoder_net = LSTM(latent_dim, return_state=True, return_sequences=True)
         self.dense = Dense(output_dim, activation=output_activation)
 
-    def call(self, x: tf.Tensor, init_state: List[tf.Tensor]) -> Tuple[tf.Tensor, tf.Tensor, List[tf.Tensor]]:
+    def call(self,
+             x: tf.Tensor,
+             encoder_values: tf.Tensor,
+             init_state: List[tf.Tensor]) -> Tuple[tf.Tensor, tf.Tensor, List[tf.Tensor]]:
         x, h, c = self.decoder_net(x, initial_state=init_state)
         dec_out = self.dense(x)
+        return dec_out, x, [h, c]
+
+
+class DecoderLSTMAttentionTF(Layer):
+
+    def __init__(self,
+                 latent_dim: int,
+                 output_dim: int,
+                 output_activation: str = None,
+                 name: str = 'decoder_lstm_attention') -> None:
+        """
+        LSTM decoder.
+
+        Parameters
+        ----------
+        latent_dim
+            Latent dimension.
+        output_dim
+            Decoder output dimension.
+        output_activation
+            Activation used in the Dense output layer.
+        name
+            Name of decoder.
+        """
+        super(DecoderLSTMAttentionTF, self).__init__(name=name)
+        self.decoder_net = LSTM(latent_dim, return_state=True, return_sequences=True)
+        self.attention = Attention()
+        self.dense = Dense(output_dim, activation=output_activation)
+
+    def call(self,
+             x: tf.Tensor,
+             encoder_values: tf.Tensor,
+             init_state: List[tf.Tensor]) -> Tuple[tf.Tensor, tf.Tensor, List[tf.Tensor]]:
+        x, h, c = self.decoder_net(x, initial_state=init_state)
+        context_vectors = self.attention([x, encoder_values])
+        hidden_context_concat = tf.keras.layers.concatenate([x, context_vectors])
+        dec_out = self.dense(hidden_context_concat)
+        return dec_out, x, [h, c]
+
+
+class DecoderLSTMAttention(Layer):
+
+    def __init__(self,
+                 latent_dim: int,
+                 output_dim: int,
+                 output_activation: str = None,
+                 name: str = 'decoder_lstm_attention') -> None:
+        """
+        LSTM decoder.
+
+        Parameters
+        ----------
+        latent_dim
+            Latent dimension.
+        output_dim
+            Decoder output dimension.
+        output_activation
+            Activation used in the Dense output layer.
+        name
+            Name of decoder.
+        """
+        super(DecoderLSTMAttention, self).__init__(name=name)
+        self.decoder_net = LSTM(latent_dim, return_state=True, return_sequences=True)
+        self.attention = Attention()
+        self.dense = Dense(output_dim, activation=output_activation)
+
+    def call(self,
+             x: tf.Tensor,
+             encoder_values: tf.Tensor,
+             init_state: List[tf.Tensor]) -> Tuple[tf.Tensor, tf.Tensor, List[tf.Tensor]]:
+        x, h, c = self.decoder_net(x, initial_state=init_state)
+        attention_matrix = tf.keras.layers.dot([encoder_values, x], axes=[2, 2])
+        scores = tf.nn.softmax(attention_matrix)
+        tiled = tf.tile(tf.expand_dims(encoder_values, axis=1), [1, x.shape[1], 1, 1])
+        context_vectors = tf.math.reduce_sum(tiled * tf.expand_dims(scores, axis=-1), axis=1)
+        hidden_context_concat = tf.keras.layers.concatenate([x, context_vectors])
+        dec_out = self.dense(hidden_context_concat)
         return dec_out, x, [h, c]
 
 
@@ -235,7 +315,7 @@ class Seq2Seq(tf.keras.Model):
 
     def __init__(self,
                  encoder_net: EncoderLSTM,
-                 decoder_net: DecoderLSTM,
+                 decoder_net: Union[DecoderLSTM, DecoderLSTMAttention],
                  threshold_net: tf.keras.Sequential,
                  n_features: int,
                  score_fn: Callable = tf.math.squared_difference,
@@ -272,8 +352,8 @@ class Seq2Seq(tf.keras.Model):
     def call(self, x: tf.Tensor) -> tf.Tensor:
         """ Forward pass used for teacher-forcing training. """
         # reconstruct input via encoder-decoder
-        init_state = self.encoder(x)[1]
-        x_recon, z, _ = self.decoder(x, init_state=init_state)
+        encoder_values, init_state = self.encoder(x)
+        x_recon, z, _ = self.decoder(x, encoder_values=encoder_values, init_state=init_state)
 
         # compute outlier score
         err_recon = self.score_fn(x, x_recon)
@@ -293,7 +373,7 @@ class Seq2Seq(tf.keras.Model):
         n_batch = x.shape[0]
 
         # use encoder to get state vectors
-        init_state = self.encoder(x)[1]
+        encoder_values, init_state = self.encoder(x)
 
         # generate start of target sequence
         decoder_input = np.reshape(x[:, 0, :], (n_batch, 1, -1))
@@ -307,7 +387,7 @@ class Seq2Seq(tf.keras.Model):
         i = 1
         while i < seq_len:
             # decode step in sequence
-            decoder_output = self.decoder(decoder_input, init_state=init_state)
+            decoder_output = self.decoder(decoder_input, encoder_values=encoder_values, init_state=init_state)
             decoded_seq[:, i:i+1, :] = decoder_output[0].numpy()
             init_state = decoder_output[2]
 
